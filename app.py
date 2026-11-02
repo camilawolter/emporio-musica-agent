@@ -3,11 +3,19 @@ import json
 import pandas as pd
 from groq import Groq
 from pypdf import PdfReader
+import streamlit as st
+
+st.set_page_config(
+    page_title="Empório da Música - Atendimento",
+    page_icon="🎸",
+    layout="centered"
+)
 
 client = Groq()
 
 DATA_DIR = "data"
 
+@st.cache_data
 def load_data():
     try:
         products = pd.read_csv(os.path.join(DATA_DIR, "products.csv"))
@@ -16,11 +24,11 @@ def load_data():
         promotions = pd.read_csv(os.path.join(DATA_DIR, "promotions.csv"))
         return products, orders, customers, promotions
     except Exception as e:
-        print(f"Erro ao carregar dados CSV: {e}")
         return None, None, None, None
 
 products_df, orders_df, customers_df, promotions_df = load_data()
 
+@st.cache_data
 def load_policies():
     pdf_path = os.path.join(DATA_DIR, "politicas_da_loja.pdf")
     if not os.path.exists(pdf_path):
@@ -118,35 +126,60 @@ groq_tools = [
     }
 ]
 
-def run_cli():
-    system_prompt = """
-    Você é o assistente virtual da "Empório da Música", uma loja de instrumentos musicais de Campo Grande/MS.
-    Sua missão é atender clientes via WhatsApp com um tom informal, mas profissional.
-    1. Trabalhamos EXCLUSIVAMENTE com instrumentos musicais. NUNCA venda acessórios.
-    2. Nunca invente preços, estoque ou prazos. Sempre utilize as ferramentas disponíveis.
-    """
+st.title("🎸 Empório da Música")
+st.caption("Seu assistente virtual de atendimento especializado em instrumentos musicais (Campo Grande/MS)")
+
+system_prompt = """
+Você é o assistente virtual da "Empório da Música", uma loja de instrumentos musicais de Campo Grande/MS.
+Sua missão é atender clientes via WhatsApp com um tom informal, mas profissional.
+1. Trabalhamos EXCLUSIVAMENTE com instrumentos musicais. NUNCA venda acessórios.
+2. Nunca invente preços, estoque ou prazos. Sempre utilize as ferramentas disponíveis.
+"""
+
+if "messages" not in st.session_state:
+    st.session_state.messages = [{"role": "system", "content": system_prompt}]
+
+for message in st.session_state.messages:
+    role = message.get("role")
+    content = message.get("content")
+    if role != "system" and content:
+        with st.chat_message(role):
+            st.markdown(content)
+
+if user_input := st.chat_input("Digite sua dúvida (ex: Quanto custa o Takamine GD20?)..."):
+    with st.chat_message("user"):
+        st.markdown(user_input)
     
-    messages = [{"role": "system", "content": system_prompt}]
-    print("🎸 Bem-vindo ao atendimento da Empório da Música (via Groq Gratuito)! Digite 'sair' para encerrar.")
-    
-    while True:
-        user_input = input("\nCliente: ")
-        if user_input.lower() in ["sair", "exit", "quit"]:
-            break
-            
-        messages.append({"role": "user", "content": user_input})
-        
+    st.session_state.messages.append({"role": "user", "content": user_input})
+
+    try:
         response = client.chat.completions.create(
             model="openai/gpt-oss-120b",
-            messages=messages,
+            messages=st.session_state.messages,
             tools=groq_tools,
             tool_choice="auto"
         )
         
         response_message = response.choices[0].message
-        messages.append(response_message)
         
         if response_message.tool_calls:
+            tool_calls_dicts = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                } for tc in response_message.tool_calls
+            ]
+            
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": response_message.content or "",
+                "tool_calls": tool_calls_dicts
+            })
+            
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
                 function_to_call = tools_map[function_name]
@@ -154,7 +187,7 @@ def run_cli():
                 
                 tool_output = function_to_call(**function_args)
                 
-                messages.append({
+                st.session_state.messages.append({
                     "tool_call_id": tool_call.id,
                     "role": "tool",
                     "name": function_name,
@@ -163,13 +196,20 @@ def run_cli():
             
             second_response = client.chat.completions.create(
                 model="openai/gpt-oss-120b",
-                messages=messages
+                messages=st.session_state.messages
             )
             final_message = second_response.choices[0].message.content
-            messages.append(second_response.choices[0].message)
-            print(f"\nAgente: {final_message}")
+            
+            st.session_state.messages.append({"role": "assistant", "content": final_message})
+            
+            with st.chat_message("assistant"):
+                st.markdown(final_message)
         else:
-            print(f"\nAgente: {response_message.content}")
-
-if __name__ == "__main__":
-    run_cli()
+            final_content = response_message.content
+            st.session_state.messages.append({"role": "assistant", "content": final_content})
+            with st.chat_message("assistant"):
+                st.markdown(final_content)
+                
+    except Exception as e:
+        st.error(f"Ocorreu um erro ao comunicar com a IA: {e}")
+        
